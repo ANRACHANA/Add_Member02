@@ -10,7 +10,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Serve frontend
+// Serve HTML
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
 const PORT = process.env.PORT || 3000;
@@ -31,7 +31,7 @@ for (let i = 1; i <= 10; i++) {
       apiHash,
       { connectionRetries: 5 }
     );
-    accountsInfo[`account${i}`] = { phone, index: i }; // Add index
+    accountsInfo[`account${i}`] = { phone };
   }
 }
 
@@ -50,14 +50,14 @@ for (let i = 1; i <= 10; i++) {
 // --- In-memory data ---
 let stats = { success: 0, fail: 0 };
 let memberLogs = [];
-let floodWaits = []; // {username, account, endTime, remainingSec, index}
+let floodWaits = []; // {username, account, endTime, remainingSec}
 let isRunning = false;
 
 // --- Helper: Auto join group ---
 async function ensureJoined(client, group) {
   try {
     await client.getParticipants(group, { limit: 1 });
-    return;
+    return; // already joined
   } catch {}
   try {
     let hash = null;
@@ -71,7 +71,6 @@ app.get("/accounts", (req, res) => {
   const list = Object.keys(clients).map((name) => ({
     name,
     phone: accountsInfo[name]?.phone || "",
-    index: accountsInfo[name]?.index || 0, // Include index for frontend
   }));
   res.json(list);
 });
@@ -143,6 +142,7 @@ app.post("/start", async (req, res) => {
       attempts++;
       accountIndex = (accountIndex + 1) % accounts.length;
       if (attempts > accounts.length) {
+        // All accounts in FLOOD_WAIT, wait 5s
         setTimeout(processNext, 5000);
         return;
       }
@@ -153,9 +153,11 @@ app.post("/start", async (req, res) => {
     try {
       await client.invoke(new Api.channels.InviteToChannel({ channel: group, users: [username] }));
       stats.success++;
-      memberLogs.push({ username, status: "success", account: accountName, index: accountsInfo[accountName].index });
+      memberLogs.push({ username, status: "success", account: accountName });
+      console.log(`✅ ${username} added by ${accountName}`);
 
       userIndex++;
+      // Delay only after success
       setTimeout(processNext, DELAY);
     } catch (err) {
       if (err.message.includes("FLOOD_WAIT")) {
@@ -166,26 +168,26 @@ app.post("/start", async (req, res) => {
           account: accountName,
           endTime: new Date(endTimeMs).toLocaleString(),
           endTimeMs,
-          remainingSec: waitSec,
-          index: accountsInfo[accountName].index
+          remainingSec: waitSec
         });
-        memberLogs.push({ username, status: "fail", error: err.message, account: accountName, index: accountsInfo[accountName].index });
-        userIndex++;
-        processNext();
+        console.log(`⏳ FLOOD_WAIT for ${accountName} (${waitSec}s)`);
+        memberLogs.push({ username, status: "fail", error: err.message, account: accountName });
+        userIndex++; // Skip user, try next
+        processNext(); // No delay here
       } else if (
         err.message.includes("USER_PRIVACY") ||
         err.message.includes("USER_ALREADY") ||
         err.message.includes("USER_BANNED")
       ) {
         stats.fail++;
-        memberLogs.push({ username, status: "skipped", reason: err.message, account: accountName, index: accountsInfo[accountName].index });
+        memberLogs.push({ username, status: "skipped", reason: err.message, account: accountName });
         userIndex++;
-        processNext();
+        processNext(); // No delay
       } else {
         stats.fail++;
-        memberLogs.push({ username, status: "fail", error: err.message, account: accountName, index: accountsInfo[accountName].index });
+        memberLogs.push({ username, status: "fail", error: err.message, account: accountName });
         userIndex++;
-        processNext();
+        processNext(); // No delay
       }
     }
   };
